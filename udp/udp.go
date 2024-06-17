@@ -12,6 +12,24 @@ type Conn struct {
 	*ipv4.RawConn
 }
 
+//func (c *Conn) Close() error {
+//	return c.pc.Close()
+//}
+
+func Listen(network, address string) (*Conn, error) {
+	packetConn, err := net.ListenPacket(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("error net.ListenPacket(%s): %s\n", network, err)
+	}
+	rawConn, err := ipv4.NewRawConn(packetConn)
+	if err != nil {
+		return nil, fmt.Errorf("error ipv4.NewRawConn(%s): %s\n", network, err)
+	}
+	return &Conn{
+		RawConn: rawConn,
+	}, nil
+}
+
 func (c *Conn) ReadPacket(b []byte) (*Packet, error) {
 	hdr, ipPayload, _, err := c.RawConn.ReadFrom(b)
 	if err != nil {

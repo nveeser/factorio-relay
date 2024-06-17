@@ -2,15 +2,50 @@ package main
 
 import (
 	"factorio-relay/udp"
+	"flag"
 	"fmt"
-	"golang.org/x/net/ipv4"
 	"net"
+	"os"
 	"runtime/debug"
+	"strings"
 )
 
-var dests = flag.
+var addrs addressList
+
+var verbose = flag.Bool("verbose", false, "enable verbose logging")
+
+func init() {
+	flag.Var(&addrs, "networks", "List of networks to broadcast to")
+}
 
 func main() {
+	flag.Parse()
+	for _, a := range os.Args {
+		fmt.Printf("Command: %s\n", a)
+	}
+	printInterfaces()
+	if err := relay(); err != nil {
+		fmt.Printf("Error during relay: %s", err)
+	}
+}
+func printInterfaces() {
+	list, err := net.Interfaces()
+	if err != nil {
+		return
+	}
+	for _, iface := range list {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			fmt.Printf("iface.Addrs() err: %s\n", err)
+			continue
+		}
+		for _, addr := range addrs {
+			fmt.Printf("%s: %s\n", iface.Name, addr)
+		}
+	}
+}
+
+func relay() error {
 	// Recover from the panic and print the stack trace.
 	defer func() {
 		if r := recover(); r != nil {
@@ -19,66 +54,68 @@ func main() {
 		}
 	}()
 
-	ifaces, err := net.Interfaces()
-	if err == nil {
-		for _, iface := range ifaces {
-			addrs, err := iface.Addrs()
-			if err != nil {
-				fmt.Printf("iface.Addrs() err: %s\n", err)
-				continue
-			}
-			for _, addr := range addrs {
-				fmt.Printf("%s: %s\n", iface.Name, addr)
-			}
-		}
-	}
-	reader, err := listen("ip4:17", "0.0.0.0")
+	reader, err := udp.Listen("ip4:17", "0.0.0.0")
 	if err != nil {
-		fmt.Printf("error net.ListenPacket(ip4:17): %s\n", err)
-		return
+		return fmt.Errorf("error net.ListenPacket(ip4:17): %w", err)
 	}
-	writer, err := listen("ip4:17", "0.0.0.0")
+	defer reader.Close()
+	writer, err := udp.Listen("ip4:17", "0.0.0.0")
 	if err != nil {
-		fmt.Printf("error net.ListenPacket(ip4:17): %s\n", err)
-		return
+		return fmt.Errorf("error net.ListenPacket(ip4:17): %w", err)
 	}
+	defer writer.Close()
 	for {
 		buf := make([]byte, 1024)
 		packet, err := reader.ReadPacket(buf)
 		if err != nil {
-			fmt.Printf("Error: %s\n", err)
-			return
+			return fmt.Errorf("error ReadPacket(): %w", err)
 		}
 
-		fmt.Printf("Header: %s", packet.IPHeader)
-		fmt.Printf("UDP: %s\n", packet.UDPHeader)
-		fmt.Printf("Data: %v\n", packet.Payload)
-
-		packet.IPHeader.Dst = net.ParseIP("10.0.50.255")
-
-		csum, err := udp.Checksum(packet)
-		if err != nil {
-			fmt.Printf("error UDPChecksum(): %s\n", err)
-			return
+		if *verbose {
+			fmt.Printf("Header: %s", packet.IPHeader)
+			fmt.Printf("UDP: %s\n", packet.UDPHeader)
+			fmt.Printf("Data: %v\n", packet.Payload)
 		}
-		packet.UDPHeader.Checksum = csum
 
-		if err := writer.WritePacket(packet); err != nil {
-			fmt.Printf("error UDPChecksum(): %s\n", err)
-			return
+		if len(addrs) == 0 {
+			fmt.Printf("No Networks to relay to")
+			continue
+		}
+
+		for _, addr := range addrs {
+			if *verbose {
+				fmt.Printf("Publish to %s", addr)
+			}
+			packet.IPHeader.Dst = addr
+			packet.UDPHeader.Checksum, err = udp.Checksum(packet)
+			if err != nil {
+				return fmt.Errorf("error UDPChecksum(): %w", err)
+			}
+			if err := writer.WritePacket(packet); err != nil {
+				return fmt.Errorf("error WritePacket(): %w", err)
+			}
 		}
 	}
 }
 
-func listen(network, address string) (*udp.Conn, error) {
-	rc, err := net.ListenPacket(network, address)
-	if err != nil {
-		return nil, fmt.Errorf("error net.ListenPacket(%s): %s\n", network, err)
+type addressList []net.IP
+
+func (a *addressList) String() string {
+	var s []string
+	for _, ip := range *a {
+		s = append(s, ip.String())
 	}
-	defer rc.Close()
-	rConn, err := ipv4.NewRawConn(rc)
-	if err != nil {
-		return nil, fmt.Errorf("error ipv4.NewRawConn(%s): %s\n", network, err)
+	return strings.Join(s, ",")
+}
+
+func (a *addressList) Set(s string) error {
+	vals := strings.Split(s, ",")
+	for _, v := range vals {
+		ip := net.ParseIP(v)
+		if ip == nil {
+			return fmt.Errorf("invalid address: %s", v)
+		}
+		*a = append(*a, ip)
 	}
-	return &udp.Conn{RawConn: rConn}, nil
+	return nil
 }
