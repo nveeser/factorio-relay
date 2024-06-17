@@ -9,9 +9,10 @@ RUN setcap cap_net_raw+pe /app/factorio-relay
 FROM alpine:3.19
 LABEL MAINTAINER Nicholas <nicholas@peyta.com>
 ENV USER=udp-relay
-ENV NETWORKS=""
+ENV RELAYS=""
 RUN adduser -D ${USER}
 USER ${USER}
 WORKDIR /home/${USER}
 COPY --from=builder /app/factorio-relay /usr/bin/factorio-relay
-CMD ["sh", "-c", "/usr/bin/factorio-relay --networks=${NETWORKS}"]
+ENTRYPOINT [ "/usr/bin/factorio-relay" ]
+CMD [ "--relays=RELAYS" ]

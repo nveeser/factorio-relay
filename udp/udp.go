@@ -1,3 +1,5 @@
+// Package udp provides a file types for reading UDP packets and spoofing them
+// back onto the network.
 package udp
 
 import (
@@ -8,14 +10,14 @@ import (
 	"net"
 )
 
+// Conn wraps an existing ipv4.RawConn and parse the bytes into a package that
+// can be modified and written back out.
 type Conn struct {
 	*ipv4.RawConn
 }
 
-//func (c *Conn) Close() error {
-//	return c.pc.Close()
-//}
-
+// Listen opens a raw socket using net.ListenPacket and ipv4.NewRawConn
+// to allow parsing the IP header, UDP Header and the payload.
 func Listen(network, address string) (*Conn, error) {
 	packetConn, err := net.ListenPacket(network, address)
 	if err != nil {
@@ -30,6 +32,7 @@ func Listen(network, address string) (*Conn, error) {
 	}, nil
 }
 
+// ReadPacket reads the packet using the specified byte slice.
 func (c *Conn) ReadPacket(b []byte) (*Packet, error) {
 	hdr, ipPayload, _, err := c.RawConn.ReadFrom(b)
 	if err != nil {

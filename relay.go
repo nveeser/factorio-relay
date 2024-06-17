@@ -7,27 +7,37 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 )
 
-var addrs addressList
-
-var verbose = flag.Bool("verbose", false, "enable verbose logging")
-
-func init() {
-	flag.Var(&addrs, "networks", "List of networks to broadcast to")
-}
+var (
+	verbose = flag.Bool("verbose", false, "enable verbose logging")
+	config  = newRelayConfigFlag("relays", "Comma separated list of port and destinations to broadcast to. "+
+		"Example `3333=10.50.255.255,10.0.10.25;4444=192.168.0.255`")
+)
 
 func main() {
-	flag.Parse()
 	for _, a := range os.Args {
 		fmt.Printf("Command: %s\n", a)
 	}
+	flag.Parse()
+
 	printInterfaces()
-	if err := relay(); err != nil {
+
+	fmt.Printf("Relay Config\n")
+	for port, dstList := range *config {
+		fmt.Printf("\tPort[%d]\n", port)
+		for _, ip := range dstList {
+			fmt.Printf("\t - Dest %s\n", ip)
+		}
+	}
+
+	if err := relay(*config); err != nil {
 		fmt.Printf("Error during relay: %s", err)
 	}
 }
+
 func printInterfaces() {
 	list, err := net.Interfaces()
 	if err != nil {
@@ -45,7 +55,7 @@ func printInterfaces() {
 	}
 }
 
-func relay() error {
+func relay(config relayConfig) error {
 	// Recover from the panic and print the stack trace.
 	defer func() {
 		if r := recover(); r != nil {
@@ -56,14 +66,9 @@ func relay() error {
 
 	reader, err := udp.Listen("ip4:17", "0.0.0.0")
 	if err != nil {
-		return fmt.Errorf("error net.ListenPacket(ip4:17): %w", err)
+		return err
 	}
 	defer reader.Close()
-	writer, err := udp.Listen("ip4:17", "0.0.0.0")
-	if err != nil {
-		return fmt.Errorf("error net.ListenPacket(ip4:17): %w", err)
-	}
-	defer writer.Close()
 	for {
 		buf := make([]byte, 1024)
 		packet, err := reader.ReadPacket(buf)
@@ -71,51 +76,70 @@ func relay() error {
 			return fmt.Errorf("error ReadPacket(): %w", err)
 		}
 
-		if *verbose {
-			fmt.Printf("Header: %s", packet.IPHeader)
-			fmt.Printf("UDP: %s\n", packet.UDPHeader)
-			fmt.Printf("Data: %v\n", packet.Payload)
-		}
+		port := packet.UDPHeader.DstPort
 
-		if len(addrs) == 0 {
-			fmt.Printf("No Networks to relay to")
+		addrs, ok := config[port]
+		if !ok {
+			fmt.Printf("Port[%d] No relay configured\n", port)
 			continue
 		}
-
 		for _, addr := range addrs {
 			if *verbose {
-				fmt.Printf("Publish to %s", addr)
+				fmt.Printf("Port[%d] => %s\n", port, addr)
+				fmt.Printf("Port[%d] IP: %s\n", port, packet.IPHeader)
+				fmt.Printf("Port[%d] UDP: %s\n", port, packet.UDPHeader)
+				fmt.Printf("Port[%d] Data: %v\n", port, packet.Payload)
 			}
 			packet.IPHeader.Dst = addr
 			packet.UDPHeader.Checksum, err = udp.Checksum(packet)
 			if err != nil {
 				return fmt.Errorf("error UDPChecksum(): %w", err)
 			}
-			if err := writer.WritePacket(packet); err != nil {
+			if err := reader.WritePacket(packet); err != nil {
 				return fmt.Errorf("error WritePacket(): %w", err)
 			}
 		}
 	}
 }
 
-type addressList []net.IP
-
-func (a *addressList) String() string {
-	var s []string
-	for _, ip := range *a {
-		s = append(s, ip.String())
-	}
-	return strings.Join(s, ",")
+func newRelayConfigFlag(name, desc string) *relayConfig {
+	var config relayConfig = make(map[uint16][]net.IP)
+	flag.Var(&config, name, desc)
+	return &config
 }
 
-func (a *addressList) Set(s string) error {
-	vals := strings.Split(s, ",")
-	for _, v := range vals {
-		ip := net.ParseIP(v)
-		if ip == nil {
-			return fmt.Errorf("invalid address: %s", v)
+type relayConfig map[uint16][]net.IP
+
+func (a *relayConfig) String() string {
+	return fmt.Sprintf("%+v", *a)
+}
+
+func (a *relayConfig) Set(s string) error {
+	if strings.Index(s, "=") == -1 {
+		if ss, ok := os.LookupEnv(s); ok {
+			fmt.Printf("Setting relays from environment %q\n", s)
+			s = ss
 		}
-		*a = append(*a, ip)
+	}
+
+	for _, v := range strings.Split(s, ";") {
+		parts := strings.Split(v, "=")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid relay specification: %s", v)
+		}
+		port, err := strconv.ParseUint(parts[0], 10, 16)
+		if err != nil {
+			return fmt.Errorf("invalid relay port specification: %s (%s)", v, parts[0])
+		}
+		var ipset []net.IP
+		for _, ipstr := range strings.Split(parts[1], ",") {
+			ip := net.ParseIP(ipstr)
+			if ip == nil {
+				return fmt.Errorf("invalid address: %s", v)
+			}
+			ipset = append(ipset, ip)
+		}
+		(*a)[uint16(port)] = ipset
 	}
 	return nil
 }
